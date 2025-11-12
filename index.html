@@ -5,16 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Oasis</title>
   <link rel="stylesheet" href="style.css">
-  <!-- gzip compression for short codes -->
-  <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
 </head>
 <body>
   <div id="setup">
     <h1>Oasis</h1>
-    <p>End-to-end encrypted. Share the code with one person.</p>
+    <p>Private encrypted chat</p>
     <button id="create">Create Room</button>
-    <input id="joinCode" placeholder="Paste invite code">
-    <button id="join">Join</button>
+    <div id="linkArea" class="hidden">
+      <p>Share this link:</p>
+      <input id="roomLink" readonly>
+      <button id="copyBtn">Copy</button>
+    </div>
   </div>
 
   <div id="chat" class="hidden">
