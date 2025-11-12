@@ -1,7 +1,5 @@
 let pc, dc, key, init = false;
 const cfg = {iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
-
-// Short ID refs
 const $ = id => document.getElementById(id);
 const s = id => { $('s').classList.toggle('h'); $(id).classList.toggle('h'); };
 const msg = (f,t) => {
@@ -11,12 +9,8 @@ const msg = (f,t) => {
   $('m').appendChild(d);
   $('m').scrollTop = $('m').scrollHeight;
 };
-
-// Tiny compress/decompress
-const zip = s => btoa(String.fromCharCode(...new Uint8Array(pako.deflate(s,{to:'string'}))));
-const unzip = b => pako.inflate(Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{to:'string'});
-
-// Crypto
+const zip = str => btoa(String.fromCharCode(...new Uint8Array(pako.deflate(str,{to:'string'}))));
+const unzip = b64 => pako.inflate(Uint8Array.from(atob(b64),c=>c.charCodeAt(0)),{to:'string'});
 const gen = () => crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},1,['deriveKey']);
 const der = (a,b) => crypto.subtle.deriveKey({name:'ECDH',public:b},a,{name:'AES-GCM',length:256},0,['encrypt','decrypt']);
 const enc = async (k,t) => {
@@ -32,8 +26,6 @@ const dec = async (k,b) => {
 };
 const exp = k => crypto.subtle.exportKey('spki',k).then(e=>btoa(String.fromCharCode(...new Uint8Array(e))));
 const imp = b => crypto.subtle.importKey('spki',Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{name:'ECDH',namedCurve:'P-256'},1,[]);
-
-// Create Room
 $('c').onclick = async () => {
   init = true;
   const kp = await gen();
@@ -45,36 +37,33 @@ $('c').onclick = async () => {
   await pc.setLocalDescription(await pc.createOffer());
   s('chat');
 };
-
-// Join Room
 $('n').onclick = async () => {
-  const raw = unzip($('j').value);
-  const d = JSON.parse(raw);
-  const kp = await gen();
-  const pPub = await imp(d.p);
-  key = await der(kp.privateKey, pPub);
-  pc = new RTCPeerConnection(cfg);
-  pc.ondatachannel = e => {dc=e.channel;setupDC();}
-  await pc.setRemoteDescription(d.o);
-  await pc.setLocalDescription(await pc.createAnswer());
-  pc.onicecandidate = e => !e.candidate && prompt('Send back:', zip(JSON.stringify({a:pc.localDescription,p:await exp(kp.publicKey)})));
-  s('chat');
+  try {
+    const raw = unzip($('j').value);
+    const d = JSON.parse(raw);
+    const kp = await gen();
+    const pPub = await imp(d.p);
+    key = await der(kp.privateKey, pPub);
+    pc = new RTCPeerConnection(cfg);
+    pc.ondatachannel = e => {dc=e.channel;setupDC();}
+    await pc.setRemoteDescription(d.o);
+    await pc.setLocalDescription(await pc.createAnswer());
+    pc.onicecandidate = async e => !e.candidate && prompt('Send back:', zip(JSON.stringify({a:pc.localDescription,p:await exp(kp.publicKey)})));
+    s('chat');
+  } catch(e) { alert('Invalid code'); }
 };
-
-// Paste answer
 window.onpaste = async e => {
   if (!init || !pc) return;
   try {
     const d = JSON.parse(unzip((e.clipboardData||window.clipboardData).getData('text')));
     if (d.a) {
       await pc.setRemoteDescription(d.a);
-      key = await der((await gen()).privateKey, await imp(d.p));
+      const kp = await gen();
+      key = await der(kp.privateKey, await imp(d.p));
       msg('System','Connected');
     }
   } catch{}
 };
-
-// Send
 $('send').onclick = async () => {
   const t = $('i').value.trim();
   if (!t || !dc || dc.readyState!=='open') return;
@@ -82,8 +71,6 @@ $('send').onclick = async () => {
   msg('You',t);
   $('i').value='';
 };
-
-// DC
 function setupDC() {
   dc.onopen = () => !init && msg('System','Connected');
   dc.onmessage = async e => msg('Partner', await dec(key,e.data));
