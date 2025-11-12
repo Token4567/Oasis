@@ -1,4 +1,3 @@
-touch app.js
 // app.js – WebRTC + E2EE Private Chat (GitHub Pages Compatible)
 let peerConnection = null;
 let dataChannel = null;
