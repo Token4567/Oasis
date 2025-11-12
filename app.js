@@ -1,48 +1,41 @@
-// app.js – FINAL: Fixed syntax error + short code + works every time
-let pc, dc, sharedKey, isInitiator = false;
+let pc, dc, sharedKey;
 const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
 const $ = id => document.getElementById(id);
-const zip = s => btoa(String.fromCharCode(...new Uint8Array(pako.deflate(s, { to: 'string' }))));
-const unzip = b => pako.inflate(Uint8Array.from(atob(b), c => c.charCodeAt(0)), { to: 'string' });
 
-async function gen() { 
-  return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']); 
-}
-async function der(priv, pub) { 
-  return crypto.subtle.deriveKey({ name: 'ECDH', public: pub }, priv, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); 
-}
-async function enc(key, txt) {
+// Crypto
+const gen = () => crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']);
+const der = (a,b) => crypto.subtle.deriveKey({name:'ECDH',public:b},a,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+const enc = async (k,t) => {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const e = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(txt));
-  const a = new Uint8Array(12 + e.byteLength); a.set(iv); a.set(new Uint8Array(e), 12);
+  const e = await crypto.subtle.encrypt({name:'AES-GCM',iv},k,new TextEncoder().encode(t));
+  const a = new Uint8Array(12+e.byteLength); a.set(iv); a.set(new Uint8Array(e),12);
   return btoa(String.fromCharCode(...a));
-}
-async function dec(key, b64) {
-  const a = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: a.slice(0,12) }, key, a.slice(12)));
-}
-async function exp(k) { 
-  return btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('spki', k)))); 
-}
-async function imp(b) { 
-  return crypto.subtle.importKey('spki', Uint8Array.from(atob(b), c => c.charCodeAt(0)), { name: 'ECDH', namedCurve: 'P-256' }, true, []); 
-}
+};
+const dec = async (k,b) => {
+  const a = Uint8Array.from(atob(b),c=>c.charCodeAt(0));
+  return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:a.slice(0,12)},k,a.slice(12)));
+};
+const exp = k => crypto.subtle.exportKey('spki',k).then(e=>btoa(String.fromCharCode(...new Uint8Array(e))));
+const imp = b => crypto.subtle.importKey('spki',Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{name:'ECDH',namedCurve:'P-256'},true,[]);
 
-function add(msg, txt) {
-  const d = document.createElement('div');
-  d.className = `message ${msg === 'You' ? 'sent' : 'received'}`;
-  d.textContent = txt;
-  $('messages').appendChild(d);
-  $('messages').scrollTop = $('messages').scrollHeight;
-}
-
-// CREATE ROOM
+// Create Room
 $('#create').onclick = async () => {
-  isInitiator = true;
+  const roomId = Math.random().toString(36).substr(2, 9);
   const kp = await gen();
   const pub = await exp(kp.publicKey);
 
+  // Save to URL
+  const url = new URL(location);
+  url.searchParams.set('room', roomId);
+  url.searchParams.set('pub', pub);
+  history.replaceState(null, '', url);
+
+  // Show link
+  $('#roomLink').value = url.toString();
+  $('#linkArea').classList.remove('hidden');
+  $('#create').classList.add('hidden');
+
+  // Setup WebRTC
   pc = new RTCPeerConnection(cfg);
   dc = pc.createDataChannel('chat');
   setupDC();
@@ -50,88 +43,68 @@ $('#create').onclick = async () => {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  // Wait for ICE
-  pc.onicecandidate = () => {
-    if (pc.iceGatheringState === 'complete') {
-      const code = zip(JSON.stringify({ o: pc.localDescription.toJSON(), p: pub }));
-      prompt('Share this short code:', code);
+  pc.onicecandidate = async () => {
+    if (pc.localDescription) {
+      const sdp = pc.localDescription.sdp;
+      url.searchParams.set('sdp', btoa(sdp));
+      $('#roomLink').value = url.toString();
     }
   };
-
-  // Fallback
-  setTimeout(() => {
-    if (pc.localDescription) {
-      const code = zip(JSON.stringify({ o: pc.localDescription.toJSON(), p: pub }));
-      prompt('Share this short code:', code);
-    }
-  }, 2000);
 
   $('#setup').classList.add('hidden');
   $('#chat').classList.remove('hidden');
 };
 
-// JOIN ROOM
-$('#join').onclick = async () => {
-  const code = $('#joinCode').value.trim();
-  if (!code) return alert('Paste code');
-  try {
-    const { o, p } = JSON.parse(unzip(code));
+// Join from URL
+window.onload = async () => {
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room');
+  const pubB64 = params.get('pub');
+  const sdpB64 = params.get('sdp');
+
+  if (room && pubB64 && sdpB64) {
     const kp = await gen();
-    const partnerPub = await imp(p);
+    const partnerPub = await imp(pubB64);
     sharedKey = await der(kp.privateKey, partnerPub);
 
     pc = new RTCPeerConnection(cfg);
     pc.ondatachannel = e => { dc = e.channel; setupDC(); };
 
-    await pc.setRemoteDescription(new RTCSessionDescription(o));
+    await pc.setRemoteDescription({ type: 'offer', sdp: atob(sdpB64) });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    pc.onicecandidate = () => {
-      if (pc.iceGatheringState === 'complete') {
-        const answerCode = zip(JSON.stringify({ a: pc.localDescription.toJSON(), p: await exp(kp.publicKey) }));
-        prompt('Send back:', answerCode);
-      }
-    };
-
-    setTimeout(async () => {
-      if (pc.localDescription) {
-        const answerCode = zip(JSON.stringify({ a: pc.localDescription.toJSON(), p: await exp(kp.publicKey) }));
-        prompt('Send back:', answerCode);
-      }
-    }, 2000);
-
     $('#setup').classList.add('hidden');
     $('#chat').classList.remove('hidden');
-  } catch (e) {
-    alert('Invalid code');
   }
 };
 
-// PASTE ANSWER
-window.onpaste = async e => {
-  if (!isInitiator || !pc) return;
-  const text = (e.clipboardData || window.clipboardData).getData('text');
-  try {
-    const { a, p } = JSON.parse(unzip(text));
-    await pc.setRemoteDescription(new RTCSessionDescription(a));
-    const kp = await gen();
-    sharedKey = await der(kp.privateKey, await imp(p));
-    add('System', 'Secure connection established');
-  } catch {}
+// Copy button
+$('#copyBtn').onclick = () => {
+  $('#roomLink').select();
+  document.execCommand('copy');
+  $('#copyBtn').textContent = 'Copied!';
+  setTimeout(() => $('#copyBtn').textContent = 'Copy', 2000);
 };
 
-// SEND
+// Send
 $('#sendBtn').onclick = async () => {
-  const txt = $('#msgInput').value.trim();
-  if (!txt || !dc || dc.readyState !== 'open') return;
-  dc.send(await enc(sharedKey, txt));
-  add('You', txt);
+  const t = $('#msgInput').value.trim();
+  if (!t || !dc || dc.readyState !== 'open') return;
+  dc.send(await enc(sharedKey, t));
+  addMsg('You', t);
   $('#msgInput').value = '';
 };
 
-// DATA CHANNEL
+function addMsg(sender, text) {
+  const div = document.createElement('div');
+  div.className = `message ${sender === 'You' ? 'sent' : 'received'}`;
+  div.textContent = text;
+  $('#messages').appendChild(div);
+  $('#messages').scrollTop = $('#messages').scrollHeight;
+}
+
 function setupDC() {
-  dc.onopen = () => !isInitiator && add('System', 'Secure connection established');
-  dc.onmessage = async e => add('Partner', await dec(sharedKey, e.data));
+  dc.onopen = () => addMsg('System', 'Connected & encrypted');
+  dc.onmessage = async e => addMsg('Partner', await dec(sharedKey, e.data));
 }
