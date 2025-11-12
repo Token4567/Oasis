@@ -18,24 +18,20 @@ const dec = async (k,b) => {
 const exp = k => crypto.subtle.exportKey('spki',k).then(e=>btoa(String.fromCharCode(...new Uint8Array(e))));
 const imp = b => crypto.subtle.importKey('spki',Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{name:'ECDH',namedCurve:'P-256'},true,[]);
 
-// Create Room
+function addMsg(sender, text) {
+  const div = document.createElement('div');
+  div.className = `message ${sender === 'You' ? 'sent' : 'received'}`;
+  div.textContent = text;
+  $('#messages').appendChild(div);
+  $('#messages').scrollTop = $('#messages').scrollHeight;
+}
+
+// CREATE ROOM
 $('#create').onclick = async () => {
-  const roomId = Math.random().toString(36).substr(2, 9);
+  const roomId = Math.random().toString(36).substr(2, 8);
   const kp = await gen();
   const pub = await exp(kp.publicKey);
 
-  // Save to URL
-  const url = new URL(location);
-  url.searchParams.set('room', roomId);
-  url.searchParams.set('pub', pub);
-  history.replaceState(null, '', url);
-
-  // Show link
-  $('#roomLink').value = url.toString();
-  $('#linkArea').classList.remove('hidden');
-  $('#create').classList.add('hidden');
-
-  // Setup WebRTC
   pc = new RTCPeerConnection(cfg);
   dc = pc.createDataChannel('chat');
   setupDC();
@@ -43,24 +39,33 @@ $('#create').onclick = async () => {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  pc.onicecandidate = async () => {
+  // Wait for SDP
+  const updateLink = () => {
+    const url = new URL(location);
+    url.searchParams.set('room', roomId);
+    url.searchParams.set('pub', pub);
     if (pc.localDescription) {
-      const sdp = pc.localDescription.sdp;
-      url.searchParams.set('sdp', btoa(sdp));
-      $('#roomLink').value = url.toString();
+      url.searchParams.set('sdp', btoa(pc.localDescription.sdp));
     }
+    $('#roomLink').value = url.toString();
   };
 
+  pc.onicecandidate = () => updateLink();
+  setInterval(updateLink, 500); // Keep updating
+
+  updateLink();
+  $('#linkArea').classList.remove('hidden');
+  $('#create').classList.add('hidden');
   $('#setup').classList.add('hidden');
   $('#chat').classList.remove('hidden');
 };
 
-// Join from URL
+// JOIN FROM URL
 window.onload = async () => {
-  const params = new URLSearchParams(location.search);
-  const room = params.get('room');
-  const pubB64 = params.get('pub');
-  const sdpB64 = params.get('sdp');
+  const url = new URL(location);
+  const room = url.searchParams.get('room');
+  const pubB64 = url.searchParams.get('pub');
+  const sdpB64 = url.searchParams.get('sdp');
 
   if (room && pubB64 && sdpB64) {
     const kp = await gen();
@@ -74,12 +79,12 @@ window.onload = async () => {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    $('#setup').classList.add('hidden');
+    $('#setup').classList.add('hidden детали');
     $('#chat').classList.remove('hidden');
   }
 };
 
-// Copy button
+// COPY BUTTON
 $('#copyBtn').onclick = () => {
   $('#roomLink').select();
   document.execCommand('copy');
@@ -87,7 +92,7 @@ $('#copyBtn').onclick = () => {
   setTimeout(() => $('#copyBtn').textContent = 'Copy', 2000);
 };
 
-// Send
+// SEND
 $('#sendBtn').onclick = async () => {
   const t = $('#msgInput').value.trim();
   if (!t || !dc || dc.readyState !== 'open') return;
@@ -96,14 +101,7 @@ $('#sendBtn').onclick = async () => {
   $('#msgInput').value = '';
 };
 
-function addMsg(sender, text) {
-  const div = document.createElement('div');
-  div.className = `message ${sender === 'You' ? 'sent' : 'received'}`;
-  div.textContent = text;
-  $('#messages').appendChild(div);
-  $('#messages').scrollTop = $('#messages').scrollHeight;
-}
-
+// DATA CHANNEL
 function setupDC() {
   dc.onopen = () => addMsg('System', 'Connected & encrypted');
   dc.onmessage = async e => addMsg('Partner', await dec(sharedKey, e.data));
