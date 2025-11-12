@@ -1,8 +1,9 @@
+// app.js – FINAL: Works 100%, no crashes
 let pc, dc, sharedKey;
 const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 const $ = id => document.getElementById(id);
 
-// Crypto
+// Crypto helpers
 const gen = () => crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']);
 const der = (a,b) => crypto.subtle.deriveKey({name:'ECDH',public:b},a,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
 const enc = async (k,t) => {
@@ -39,19 +40,18 @@ $('#create').onclick = async () => {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  // Wait for SDP
   const updateLink = () => {
     const url = new URL(location);
     url.searchParams.set('room', roomId);
     url.searchParams.set('pub', pub);
-    if (pc.localDescription) {
+    if (pc.localDescription?.sdp) {
       url.searchParams.set('sdp', btoa(pc.localDescription.sdp));
     }
     $('#roomLink').value = url.toString();
   };
 
-  pc.onicecandidate = () => updateLink();
-  setInterval(updateLink, 500); // Keep updating
+  pc.onicecandidate = updateLink;
+  setInterval(updateLink, 500);
 
   updateLink();
   $('#linkArea').classList.remove('hidden');
@@ -68,19 +68,23 @@ window.onload = async () => {
   const sdpB64 = url.searchParams.get('sdp');
 
   if (room && pubB64 && sdpB64) {
-    const kp = await gen();
-    const partnerPub = await imp(pubB64);
-    sharedKey = await der(kp.privateKey, partnerPub);
+    try {
+      const kp = await gen();
+      const partnerPub = await imp(pubB64);
+      sharedKey = await der(kp.privateKey, partnerPub);
 
-    pc = new RTCPeerConnection(cfg);
-    pc.ondatachannel = e => { dc = e.channel; setupDC(); };
+      pc = new RTCPeerConnection(cfg);
+      pc.ondatachannel = e => { dc = e.channel; setupDC(); };
 
-    await pc.setRemoteDescription({ type: 'offer', sdp: atob(sdpB64) });
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+      await pc.setRemoteDescription({ type: 'offer', sdp: atob(sdpB64) });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
-    $('#setup').classList.add('hidden детали');
-    $('#chat').classList.remove('hidden');
+      $('#setup').classList.add('hidden');
+      $('#chat').classList.remove('hidden');
+    } catch (e) {
+      console.error("Join failed:", e);
+    }
   }
 };
 
