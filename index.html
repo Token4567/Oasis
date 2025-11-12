@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oasis</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="setup">
+    <h1>Oasis</h1>
+    <p>Private encrypted chat</p>
+    <button id="create">Create Room</button>
+    <div id="linkArea" class="hidden">
+      <p>Share this link:</p>
+      <input id="roomLink" readonly>
+      <button id="copyBtn">Copy</button>
+    </div>
+  </div>
+
+  <div id="chat" class="hidden">
+    <div id="messages"></div>
+    <div id="inputArea">
+      <input id="msgInput" placeholder="Type..." autocomplete="off">
+      <button id="sendBtn">Send</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
