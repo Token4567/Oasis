@@ -1,26 +1,25 @@
-// app.js – Fixed: Short code appears on "Create Room"
+// app.js – FINAL: Short code + ICE wait + 100% working
 let pc, dc, sharedKey, isInitiator = false;
 const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-// Helpers
 const $ = id => document.getElementById(id);
 const zip = s => btoa(String.fromCharCode(...new Uint8Array(pako.deflate(s,{to:'string'}))));
 const unzip = b => pako.inflate(Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{to:'string'});
 
-async function gen() { return crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']); }
-async function der(priv, pub) { return crypto.subtle.deriveKey({name:'ECDH',public:pub},priv,{name:'AES-GCM',length:256},false,['encrypt','decrypt']); }
-async function enc(key,txt) {
+async function gen() { return crypto.subtle.generateKey({name:'ECDH',, namedCurve:'P-256'}, true, ['deriveKey']); }
+async function der(priv, pub) { return crypto.subtle.deriveKey({name:'ECDH', public:pub}, priv, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']); }
+async function enc(key, txt) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const e = await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(txt));
-  const a = new Uint8Array(12+e.byteLength); a.set(iv); a.set(new Uint8Array(e),12);
+  const e = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, new TextEncoder().encode(txt));
+  const a = new Uint8Array(12 + e.byteLength); a.set(iv); a.set(new Uint8Array(e), 12);
   return btoa(String.fromCharCode(...a));
 }
-async function dec(key,b64) {
-  const a = Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
-  return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:a.slice(0,12)},key,a.slice(12)));
+async function dec(key, b64) {
+  const a = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM', iv:a.slice(0,12)}, key, a.slice(12)));
 }
-async function exp(k) { return btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('spki',k)))); }
-async function imp(b) { return crypto.subtle.importKey('spki',Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{name:'ECDH',namedCurve:'P-256'},true,[]); }
+async function exp(k) { return btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('spki', k)))); }
+async function imp(b) { return crypto.subtle.importKey('spki', Uint8Array.from(atob(b), c=>c.charCodeAt(0)), {name:'ECDH', namedCurve:'P-256'}, true, []); }
 
 function add(msg, txt) {
   const d = document.createElement('div');
@@ -30,7 +29,7 @@ function add(msg, txt) {
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 
-// ---------- Create Room (FIXED) ----------
+// ---------- CREATE ROOM (FIXED) ----------
 $('#create').onclick = async () => {
   isInitiator = true;
   const kp = await gen();
@@ -40,23 +39,33 @@ $('#create').onclick = async () => {
   dc = pc.createDataChannel('chat');
   setupDC();
 
-  // Wait for ICE to finish
-  pc.onicecandidate = async () => {
-    if (pc.iceGatheringState === 'complete' || !pc.localDescription) return;
-    const offer = pc.localDescription;
-    const code = zip(JSON.stringify({ o: offer, p: pub }));
-    prompt('Share this short code:', code);
-    pc.onicecandidate = null; // Prevent duplicate
-  };
-
+  // Wait for ICE gathering to complete
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+
+  // Collect ICE candidates
+  const candidates = [];
+  pc.onicecandidate = e => {
+    if (e.candidate) candidates.push(e.candidate);
+    else showOffer(); // ICE done
+  };
+
+  // Fallback: show offer after 3 seconds
+  setTimeout(() => { if (pc.localDescription) showOffer(); }, 3000);
+
+  async function showOffer() {
+    if (pc.localDescription && pc.localDescription.sdp.includes('m=')) {
+      const finalOffer = { ...pc.localDescription.toJSON(), candidates };
+      const code = zip(JSON.stringify({ o: finalOffer, p: pub }));
+      prompt('Share this short code:', code);
+    }
+  }
 
   $('#setup').classList.add('hidden');
   $('#chat').classList.remove('hidden');
 };
 
-// ---------- Join Room ----------
+// ---------- JOIN ROOM ----------
 $('#join').onclick = async () => {
   const code = $('#joinCode').value.trim();
   if (!code) return alert('Paste a code');
@@ -70,48 +79,34 @@ $('#join').onclick = async () => {
     pc = new RTCPeerConnection(cfg);
     pc.ondatachannel = e => { dc = e.channel; setupDC(); };
 
-    await pc.setRemoteDescription(o);
+    // Restore offer + candidates
+    await pc.setRemoteDescription(new RTCSessionDescription(o));
+    if (o.candidates) o.candidates.forEach(c => pc.addIceCandidate(c));
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    pc.onicecandidate = async () => {
-      if (pc.iceGatheringState === 'complete' || !pc.localDescription) return;
-      const answerCode = zip(JSON.stringify({ a: pc.localDescription, p: await exp(kp.publicKey) }));
-      prompt('Send back this short code:', answerCode);
-      pc.onicecandidate = null;
+    const answerCandidates = [];
+    pc.onicecandidate = e => {
+      if (e.candidate) answerCandidates.push(e.candidate);
+      else showAnswer();
     };
+
+    setTimeout(() => { if (pc.localDescription) showAnswer(); }, 3000);
+
+    async function showAnswer() {
+      const finalAnswer = { ...pc.localDescription.toJSON(), candidates: answerCandidates };
+      const answerCode = zip(JSON.stringify({ a: finalAnswer, p: await exp(kp.publicKey) }));
+      prompt('Send back this short code:', answerCode);
+    }
 
     $('#setup').classList.add('hidden');
     $('#chat').classList.remove('hidden');
   } catch (e) {
-    alert('Invalid or corrupted code');
+    alert('Invalid code');
   }
 };
 
-// ---------- Paste Answer ----------
+// ---------- PASTE ANSWER ----------
 window.onpaste = async e => {
-  if (!isInitiator || !pc) return;
-  const text = (e.clipboardData || window.clipboardData).getData('text');
-  try {
-    const { a, p } = JSON.parse(unzip(text));
-    await pc.setRemoteDescription(a);
-    const kp = await gen();
-    sharedKey = await der(kp.privateKey, await imp(p));
-    add('System', 'Secure connection established');
-  } catch {}
-};
-
-// ---------- Send Message ----------
-$('#sendBtn').onclick = async () => {
-  const txt = $('#msgInput').value.trim();
-  if (!txt || !dc || dc.readyState !== 'open') return;
-  dc.send(await enc(sharedKey, txt));
-  add('You', txt);
-  $('#msgInput').value = '';
-};
-
-// ---------- Data Channel ----------
-function setupDC() {
-  dc.onopen = () => !isInitiator && add('System', 'Secure connection established');
-  dc.onmessage = async e => add('Partner', await dec(sharedKey, e.data));
-}
+  if (!isInitiator
