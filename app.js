@@ -1,188 +1,87 @@
-// app.js – WebRTC + E2EE Private Chat (GitHub Pages Compatible)
-let peerConnection = null;
-let dataChannel = null;
-let sharedKey = null;
-let isInitiator = false;
+// app.js – WebRTC + E2EE + SHORT invite codes
+let pc, dc, sharedKey, isInitiator = false;
+const cfg = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+// ---------- Helpers ----------
+const $ = id => document.getElementById(id);
+const zip = s => btoa(String.fromCharCode(...new Uint8Array(pako.deflate(s,{to:'string'}))));
+const unzip = b => pako.inflate(Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{to:'string'});
 
-// Crypto: ECDH + AES-GCM
-async function generateKeyPair() {
-  return await crypto.subtle.generateKey(
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    ['deriveKey']
-  );
-}
-
-async function deriveSharedKey(myPriv, partnerPub) {
-  return await crypto.subtle.deriveKey(
-    { name: 'ECDH', public: partnerPub },
-    myPriv,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
-}
-
-async function encryptMessage(key, text) {
-  const encoder = new TextEncoder();
+async function gen() { return crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']); }
+async function der(priv, pub) { return crypto.subtle.deriveKey({name:'ECDH',public:pub},priv,{name:'AES-GCM',length:256},false,['encrypt','decrypt']); }
+async function enc(key,txt) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = encoder.encode(text);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    data
-  );
-  const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ciphertext), iv.byteLength);
-  return btoa(String.fromCharCode(...combined));
+  const e = await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(txt));
+  const a = new Uint8Array(12+e.byteLength); a.set(iv); a.set(new Uint8Array(e),12);
+  return btoa(String.fromCharCode(...a));
+}
+async function dec(key,b64) {
+  const a = Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+  return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:a.slice(0,12)},key,a.slice(12)));
+}
+async function exp(k) { return btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('spki',k)))); }
+async function imp(b) { return crypto.subtle.importKey('spki',Uint8Array.from(atob(b),c=>c.charCodeAt(0)),{name:'ECDH',namedCurve:'P-256'},true,[]); }
+
+function add(msg, txt) {
+  const d = document.createElement('div');
+  d.className = `message ${msg==='You'?'sent':'received'}`;
+  d.textContent = txt;
+  $('messages').appendChild(d);
+  $('messages').scrollTop = $('messages').scrollHeight;
 }
 
-async function decryptMessage(key, b64) {
-  const decoder = new TextDecoder();
-  const combined = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  const iv = combined.slice(0, 12);
-  const ciphertext = combined.slice(12);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    ciphertext
-  );
-  return decoder.decode(plaintext);
-}
-
-async function exportPublicKey(key) {
-  const exported = await crypto.subtle.exportKey('spki', key);
-  return btoa(String.fromCharCode(...new Uint8Array(exported)));
-}
-
-async function importPublicKey(b64) {
-  const binary = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey(
-    'spki',
-    binary,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    []
-  );
-}
-
-// UI Elements
-const setupDiv = document.getElementById('setup');
-const chatDiv = document.getElementById('chat');
-const messagesDiv = document.getElementById('messages');
-const msgInput = document.getElementById('msgInput');
-const sendBtn = document.getElementById('sendBtn');
-
-let myKeyPair = null;
-
-// --- Create Room ---
-document.getElementById('create').onclick = async () => {
+// ---------- UI ----------
+$('#setup').classList.remove('hidden');
+$('#create').onclick = async () => {
   isInitiator = true;
-  myKeyPair = await generateKeyPair();
-  const pubB64 = await exportPublicKey(myKeyPair.publicKey);
-
-  peerConnection = new RTCPeerConnection(config);
-  dataChannel = peerConnection.createDataChannel('chat');
-  setupDataChannel();
-
-  peerConnection.onicecandidate = (e) => {
-    if (!e.candidate) {
-      const offer = peerConnection.localDescription;
-      const code = JSON.stringify({ offer, pubKey: pubB64 });
-      prompt('Share this code with your friend:', code);
-    }
-  };
-
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-
-  setupDiv.classList.add('hidden');
-  chatDiv.classList.remove('hidden');
+  const kp = await gen();
+  const pub = await exp(kp.publicKey);
+  pc = new RTCPeerConnection(cfg);
+  dc = pc.createDataChannel('chat');
+  setupDC();
+  pc.onicecandidate = e => !e.candidate && prompt('Share this short code:', zip(JSON.stringify({o:pc.localDescription,p:pub})));
+  await pc.setLocalDescription(await pc.createOffer());
+  $('#setup').classList.add('hidden'); $('#chat').classList.remove('hidden');
 };
 
-// --- Join Room ---
-document.getElementById('join').onclick = async () => {
-  const code = document.getElementById('joinCode').value.trim();
+$('#join').onclick = async () => {
+  const code = $('#joinCode').value.trim();
   if (!code) return alert('Paste a code');
-
-  let data;
-  try { data = JSON.parse(code); } catch { return alert('Invalid code'); }
-
-  myKeyPair = await generateKeyPair();
-  const partnerPub = await importPublicKey(data.pubKey);
-  sharedKey = await deriveSharedKey(myKeyPair.privateKey, partnerPub);
-
-  peerConnection = new RTCPeerConnection(config);
-  peerConnection.ondatachannel = (event) => {
-    dataChannel = event.channel;
-    setupDataChannel();
-  };
-
-  await peerConnection.setRemoteDescription(data.offer);
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-
-  peerConnection.onicecandidate = async (e) => {
-    if (!e.candidate) {
-      const myPubB64 = await exportPublicKey(myKeyPair.publicKey);
-      const answerCode = JSON.stringify({ answer: peerConnection.localDescription, pubKey: myPubB64 });
-      prompt('Send this back to your friend:', answerCode);
-    }
-  };
-
-  setupDiv.classList.add('hidden');
-  chatDiv.classList.remove('hidden');
+  try {
+    const raw = unzip(code);
+    const {o, p} = JSON.parse(raw);
+    const kp = await gen();
+    const partnerPub = await imp(p);
+    sharedKey = await der(kp.privateKey, partnerPub);
+    pc = new RTCPeerConnection(cfg);
+    pc.ondatachannel = e => {dc=e.channel; setupDC();}
+    await pc.setRemoteDescription(o);
+    await pc.setLocalDescription(await pc.createAnswer());
+    pc.onicecandidate = async e => !e.candidate && prompt('Send back this short code:', zip(JSON.stringify({a:pc.localDescription,p:await exp(kp.publicKey)})));
+    $('#setup').classList.add('hidden'); $('#chat').classList.remove('hidden');
+  } catch { alert('Invalid code'); }
 };
 
-// --- Paste Answer (for initiator) ---
-window.addEventListener('paste', async (e) => {
-  if (isInitiator && peerConnection) {
-    const text = (e.clipboardData || window.clipboardData).getData('text');
-    let data;
-    try { data = JSON.parse(text); } catch { return; }
-    if (data.answer) {
-      await peerConnection.setRemoteDescription(data.answer);
-      const partnerPub = await importPublicKey(data.pubKey);
-      sharedKey = await deriveSharedKey(myKeyPair.privateKey, partnerPub);
-      addMessage('System', 'Secure connection established');
-    }
-  }
-});
-
-// --- Data Channel ---
-function setupDataChannel() {
-  dataChannel.onopen = () => {
-    if (!isInitiator) addMessage('System', 'Secure connection established');
-  };
-  dataChannel.onmessage = async (e) => {
-    if (!sharedKey) return;
-    try {
-      const text = await decryptMessage(sharedKey, e.data);
-      addMessage('Partner', text);
-    } catch (err) {
-      console.error('Decrypt failed:', err);
-    }
-  };
-}
-
-// --- Send Message ---
-sendBtn.onclick = async () => {
-  const text = msgInput.value.trim();
-  if (!text || !dataChannel || dataChannel.readyState !== 'open' || !sharedKey) return;
-  const encrypted = await encryptMessage(sharedKey, text);
-  dataChannel.send(encrypted);
-  addMessage('You', text);
-  msgInput.value = '';
+window.onpaste = async e => {
+  if (!isInitiator || !pc) return;
+  try {
+    const {a, p} = JSON.parse(unzip((e.clipboardData||window.clipboardData).getData('text')));
+    await pc.setRemoteDescription(a);
+    const kp = await gen();
+    sharedKey = await der(kp.privateKey, await imp(p));
+    add('System','Secure connection established');
+  } catch {}
 };
 
-// --- Add Message ---
-function addMessage(sender, text) {
-  const div = document.createElement('div');
-  div.className = `message ${sender === 'You' ? 'sent' : 'received'}`;
-  div.textContent = text;
-  messagesDiv.appendChild(div);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+$('#sendBtn').onclick = async () => {
+  const txt = $('#msgInput').value.trim();
+  if (!txt || !dc || dc.readyState!=='open') return;
+  dc.send(await enc(sharedKey,txt));
+  add('You',txt);
+  $('#msgInput').value='';
+};
+
+function setupDC() {
+  dc.onopen = () => !isInitiator && add('System','Secure connection established');
+  dc.onmessage = async e => add('Partner', await dec(sharedKey,e.data));
 }
